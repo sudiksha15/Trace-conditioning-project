@@ -1,0 +1,3 @@
+Folder of Code downloaded from http://www.tdt.com/support/sdk.html on May 21, 2018.
+
+Code provided with TDT SDK that is used to open TDT files.
