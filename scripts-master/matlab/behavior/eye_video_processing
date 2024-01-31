@@ -1,0 +1,356 @@
+%% Mouse behavior from eyeblink videos
+behav_select = questdlg('What format is your behavior data?','Behavior Data', 'Excel', 'BinaryVideo', 'None', 'None');
+if strcmp(behav_select, 'BinaryVideo') %Binary Eye Video Behavior
+    %Parameters for loading videos
+    eye_video_name = '2917_eye_vid_seg.tif';
+    %pupil_video_name = 'BinaryPupilTrace_Jan_10_2019.tif';
+    dir_parts = split(load_path, '/');
+    behav_base_path = fullfile('/', dir_parts{1:end-1});
+    %Eye Videos
+    %Load metadata
+    full_eye_name = fullfile(behav_base_path, eye_video_name);
+    eye_info = imfinfo(full_eye_name);
+    N_images = numel(eye_info);
+    img_height = eye_info(1).Height;
+    img_width = eye_info(1).Width;
+    full_eye_stack = zeros(img_height, img_width, N_images, 'uint8');
+    eye_trace = zeros(N_images,1);
+    TifLink = Tiff(full_eye_name, 'r');
+    max_val = 255; %Normalization of Binary Trace
+    %Loop & Load Images
+    sprintf('Loading Eye Video')
+    for idx = 1:N_images
+        TifLink.setDirectory(idx);
+        cur_frame = TifLink.read(); %imread(full_eye_name, idx, 'Info', eye_info);
+        img_sum = double(sum(sum(cur_frame))) / max_val;
+        full_eye_stack(:,:,idx) = cur_frame;
+        eye_trace(idx) = img_sum;
+    end
+    TifLink.close();
+    %Pupil Videos
+    %Load metadata
+    full_pupil_name = fullfile(behav_base_path, pupil_video_name);
+    pupil_info = imfinfo(full_pupil_name);
+    N_images = numel(pupil_info);
+    img_height = pupil_info(1).Height;
+    img_width = pupil_info(1).Width;
+    full_pupil_stack = zeros(img_height, img_width, N_images, 'uint8');
+    pupil_trace = zeros(N_images,1);
+    TifLink = Tiff(full_pupil_name, 'r');
+    max_val = 255; %Normalization of Binary Trace
+    %Loop & Load Images
+    sprintf('Loading Pupil Video')
+    for idx = 1:N_images
+        TifLink.setDirectory(idx);
+        cur_frame = TifLink.read(); %imread(full_pupil_name, idx, 'Info', pupil_info);
+        img_sum = double(sum(sum(cur_frame))) / max_val;
+        full_pupil_stack(:,:,idx) = cur_frame;
+        pupil_trace(idx) = img_sum;
+    end
+    TifLink.close();
+    
+    %Find and label each trial
+    indSoundOn = find(findPulses(binSounds) == 1);
+    if strcmp(drop_artifact, 'Yes')
+        indSoundOn = indSoundOn(indSoundOn ~= 19554);
+    end
+    if strcmp(tone_only, 'Yes')
+        indPuffOff = indSoundOn + tone_only_trial_length;
+    else
+        indPuffOff = find(findPulses(binPuffs) == -1);
+    end
+    binTrials = zeros(size(binSounds));
+    [minDiff, matchIdx] = min(abs(indPuffOff(1)-indSoundOn)); 
+    trialSize = minDiff - 1; %Subtract 1 to have equal indexing sizes
+    if indSoundOn(end) == numel(binSounds) %If Last part is a tone with no puff
+        soundSelect = indSoundOn(1:end-1); %Select all but last one
+    else
+        soundSelect = indSoundOn;
+    end
+    %Deal with Trials with Sound turned on/off mid-trial
+    max_diff_vals = 40; %2 seconds as max between tone-puff
+    sound_idx = 1;
+    puff_idx = 1;
+    for idx = 1:numel(soundSelect)
+        behav = 2; %Use to demark Trials, but different from other scaling
+        if abs(indPuffOff(puff_idx)-indSoundOn(sound_idx)) > max_diff_vals
+            binTrials(indSoundOn(sound_idx):(indSoundOn(sound_idx)+trialSize)) = behav;
+            sound_idx = sound_idx + 1;
+        else
+            binTrials(indSoundOn(sound_idx):(indPuffOff(puff_idx)-1)) = behav; %Subtract one because find indPuffOff gives index that the puff is now 0.  Don't want that to have a value in trials.
+            sound_idx = sound_idx+1;
+            puff_idx = puff_idx+1;
+        end
+        if puff_idx > numel(indPuffOff)
+            puff_idx=1;
+        end
+    end
+    numTrials = sum(findPulses(abs(binTrials)) == -1); %Count trial off in abs value of all trials
+    trialWindow = ceil(sum(abs(binTrials))/numTrials); %Window for Moving Sum of Trials, Abs Value because of -1 behaviors
+
+elseif strcmp(behav_select, 'Excel') %Excel Behavior
+    %Find and extract file
+    [xlsx_file, xlsx_path] = uigetfile(fullfile(load_path,'*.xlsx'), 'Select .xlsx with behavior scores');
+    [num, txt, raw] = xlsread(fullfile(xlsx_path, xlsx_file));
+    
+    %Get column of data of interest
+    colName = 'Movement';
+    colSelect = find(strcmp(txt(1,:), colName));
+    behavCol = num(:,colSelect);
+    behavSelect = behavCol(~isnan(behavCol));
+    
+    %Find and label each trial
+    indSoundOn = find(findPulses(binSounds) == 1);
+    if strcmp(drop_artifact, 'Yes')
+        indSoundOn = indSoundOn(indSoundOn ~= 19554);
+    end
+    if strcmp(tone_only, 'Yes')
+        indPuffOff = indSoundOn + tone_only_trial_length;
+    else
+        indPuffOff = find(findPulses(binPuffs) == -1);
+    end
+    binTrials = zeros(size(binSounds));
+    trialSize = indPuffOff(1)-indSoundOn(1)-1; %Subtract 1 to have equal indexing sizes
+    for idx = 1:numel(behavSelect)
+        if behavSelect(idx) > 0 %Assume can have more than 0s and 1s as input (ie. Robb's Scaling)
+            behav = 1; %Correct trial
+        else
+            behav = -1; %Incorrect trials
+        end
+        if idx > numel(indPuffOff)
+            binTrials(indSoundOn(idx):(indSoundOn(idx)+trialSize)) = behav;
+        else
+            binTrials(indSoundOn(idx):(indPuffOff(idx)-1)) = behav; %Subtract one because find indPuffOff gives index that the puff is now 0.  Don't want that to have a value in trials.
+        end
+    end
+    numTrials = sum(findPulses(abs(binTrials)) == -1); %Count trial off in abs value of all trials
+    trialWindow = ceil(sum(abs(binTrials))/numTrials); %Window for Moving Sum of Trials, Abs Value because of -1 behaviors
+end
+
+%% Sanity Check
+%Sanity Check to compare binary traces to raw data values
+figure(); plot_names = plot(vidFrames,'-b'); line_names={'vidFrames'}; hold on; 
+plot_names(end+1)=plot(vidPuffs,'-g'); line_names{end+1} = 'vidPuffs';
+if exist('vidSounds')
+    plot_names(end+1)=plot(vidSounds,'-m'); line_names{end+1} = 'vidSounds';
+end%% Mouse behavior from eyeblink videos
+behav_select = questdlg('What format is your behavior data?','Behavior Data', 'Excel', 'BinaryVideo', 'None', 'None');
+if strcmp(behav_select, 'BinaryVideo') %Binary Eye Video Behavior
+    %Parameters for loading videos
+    eye_video_name = 'BinaryEyeTrace_Jan_10_2019.tif';
+    pupil_video_name = 'BinaryPupilTrace_Jan_10_2019.tif';
+    dir_parts = split(load_path, '/');
+    behav_base_path = fullfile('/', dir_parts{1:end-1});
+    %Eye Videos
+    %Load metadata
+    full_eye_name = fullfile(behav_base_path, eye_video_name);
+    eye_info = imfinfo(full_eye_name);
+    N_images = numel(eye_info);
+    img_height = eye_info(1).Height;
+    img_width = eye_info(1).Width;
+    full_eye_stack = zeros(img_height, img_width, N_images, 'uint8');
+    eye_trace = zeros(N_images,1);
+    TifLink = Tiff(full_eye_name, 'r');
+    max_val = 255; %Normalization of Binary Trace
+    %Loop & Load Images
+    sprintf('Loading Eye Video')
+    for idx = 1:N_images
+        TifLink.setDirectory(idx);
+        cur_frame = TifLink.read(); %imread(full_eye_name, idx, 'Info', eye_info);
+        img_sum = double(sum(sum(cur_frame))) / max_val;
+        full_eye_stack(:,:,idx) = cur_frame;
+        eye_trace(idx) = img_sum;
+    end
+    TifLink.close();
+    %Pupil Videos
+    %Load metadata
+    full_pupil_name = fullfile(behav_base_path, pupil_video_name);
+    pupil_info = imfinfo(full_pupil_name);
+    N_images = numel(pupil_info);
+    img_height = pupil_info(1).Height;
+    img_width = pupil_info(1).Width;
+    full_pupil_stack = zeros(img_height, img_width, N_images, 'uint8');
+    pupil_trace = zeros(N_images,1);
+    TifLink = Tiff(full_pupil_name, 'r');
+    max_val = 255; %Normalization of Binary Trace
+    %Loop & Load Images
+    sprintf('Loading Pupil Video')
+    for idx = 1:N_images
+        TifLink.setDirectory(idx);
+        cur_frame = TifLink.read(); %imread(full_pupil_name, idx, 'Info', pupil_info);
+        img_sum = double(sum(sum(cur_frame))) / max_val;
+        full_pupil_stack(:,:,idx) = cur_frame;
+        pupil_trace(idx) = img_sum;
+    end
+    TifLink.close();
+    
+    %Find and label each trial
+    indSoundOn = find(findPulses(binSounds) == 1);
+    if strcmp(drop_artifact, 'Yes')
+        indSoundOn = indSoundOn(indSoundOn ~= 19554);
+    end
+    if strcmp(tone_only, 'Yes')
+        indPuffOff = indSoundOn + tone_only_trial_length;
+    else
+        indPuffOff = find(findPulses(binPuffs) == -1);
+    end
+    binTrials = zeros(size(binSounds));
+    [minDiff, matchIdx] = min(abs(indPuffOff(1)-indSoundOn)); 
+    trialSize = minDiff - 1; %Subtract 1 to have equal indexing sizes
+    if indSoundOn(end) == numel(binSounds) %If Last part is a tone with no puff
+        soundSelect = indSoundOn(1:end-1); %Select all but last one
+    else
+        soundSelect = indSoundOn;
+    end
+    %Deal with Trials with Sound turned on/off mid-trial
+    max_diff_vals = 40; %2 seconds as max between tone-puff
+    sound_idx = 1;
+    puff_idx = 1;
+    for idx = 1:numel(soundSelect)
+        behav = 2; %Use to demark Trials, but different from other scaling
+        if abs(indPuffOff(puff_idx)-indSoundOn(sound_idx)) > max_diff_vals
+            binTrials(indSoundOn(sound_idx):(indSoundOn(sound_idx)+trialSize)) = behav;
+            sound_idx = sound_idx + 1;
+        else
+            binTrials(indSoundOn(sound_idx):(indPuffOff(puff_idx)-1)) = behav; %Subtract one because find indPuffOff gives index that the puff is now 0.  Don't want that to have a value in trials.
+            sound_idx = sound_idx+1;
+            puff_idx = puff_idx+1;
+        end
+        if puff_idx > numel(indPuffOff)
+            puff_idx=1;
+        end
+    end
+    numTrials = sum(findPulses(abs(binTrials)) == -1); %Count trial off in abs value of all trials
+    trialWindow = ceil(sum(abs(binTrials))/numTrials); %Window for Moving Sum of Trials, Abs Value because of -1 behaviors
+
+elseif strcmp(behav_select, 'Excel') %Excel Behavior
+    %Find and extract file
+    [xlsx_file, xlsx_path] = uigetfile(fullfile(load_path,'*.xlsx'), 'Select .xlsx with behavior scores');
+    [num, txt, raw] = xlsread(fullfile(xlsx_path, xlsx_file));
+    
+    %Get column of data of interest
+    colName = 'Movement';
+    colSelect = find(strcmp(txt(1,:), colName));
+    behavCol = num(:,colSelect);
+    behavSelect = behavCol(~isnan(behavCol));
+    
+    %Find and label each trial
+    indSoundOn = find(findPulses(binSounds) == 1);
+    if strcmp(drop_artifact, 'Yes')
+        indSoundOn = indSoundOn(indSoundOn ~= 19554);
+    end
+    if strcmp(tone_only, 'Yes')
+        indPuffOff = indSoundOn + tone_only_trial_length;
+    else
+        indPuffOff = find(findPulses(binPuffs) == -1);
+    end
+    binTrials = zeros(size(binSounds));
+    trialSize = indPuffOff(1)-indSoundOn(1)-1; %Subtract 1 to have equal indexing sizes
+    for idx = 1:numel(behavSelect)
+        if behavSelect(idx) > 0 %Assume can have more than 0s and 1s as input (ie. Robb's Scaling)
+            behav = 1; %Correct trial
+        else
+            behav = -1; %Incorrect trials
+        end
+        if idx > numel(indPuffOff)
+            binTrials(indSoundOn(idx):(indSoundOn(idx)+trialSize)) = behav;
+        else
+            binTrials(indSoundOn(idx):(indPuffOff(idx)-1)) = behav; %Subtract one because find indPuffOff gives index that the puff is now 0.  Don't want that to have a value in trials.
+        end
+    end
+    numTrials = sum(findPulses(abs(binTrials)) == -1); %Count trial off in abs value of all trials
+    trialWindow = ceil(sum(abs(binTrials))/numTrials); %Window for Moving Sum of Trials, Abs Value because of -1 behaviors
+end
+
+%% Sanity Check
+%Sanity Check to compare binary traces to raw data values
+figure(); plot_names = plot(vidFrames,'-b'); line_names={'vidFrames'}; hold on; 
+plot_names(end+1)=plot(vidPuffs,'-g'); line_names{end+1} = 'vidPuffs';
+if exist('vidSounds')
+    plot_names(end+1)=plot(vidSounds,'-m'); line_names{end+1} = 'vidSounds';
+end
+plot_names(end+1)=plot(binSounds,'-k'); line_names{end+1} = 'binSounds';
+plot_names(end+1)=plot(binPuffs,'-r'); line_names{end+1} = 'binPuffs';
+if exist('binTrials')
+    plot_names(end+1)=plot(binTrials,'-c'); line_names{end+1} = 'binTrials';
+end
+if exist('eye_trace')
+    plot_names(end+1)=plot(eye_trace / max(eye_trace),'-y'); line_names{end+1} = 'Eye_Trace';
+end
+title('Sanity Check for Line Ups')
+legend(plot_names, line_names, 'Location', 'eastoutside')
+
+%Sound Widths
+figure(); plot(movsum(binSounds, soundWindow))
+title('Width of Each Sound Pulse')
+ylabel('Width of Pulse')
+figure(); plot(movsum(binPuffs, puffWindow))
+title('Width of Each Puff Pulse')
+ylabel('Width of Pulse')
+if strcmp(behav_select, 'Excel') || strcmp(behav_select, 'BinaryVideo') %Trial Plots if There
+    figure(); plot(movsum(abs(binTrials), trialWindow))
+    title('Width of Each Trial Pulse')
+    ylabel('Width of Trial')
+end
+
+%% Saving the Output
+if strcmp(behav_select, 'BinaryVideo')
+    saveDir = behav_base_path;
+    cd(saveDir)
+    save('SyncedBehavior_BinaryVideo.mat','bin*', 'eye_trace', 'pupil_trace')
+elseif strcmp(behav_select, 'Excel')
+    saveDir = xlsx_path; %Assume xlsx is in a Behavior Output Folder
+    cd(saveDir)
+    % cd(xlsx_path)
+    save('SyncedBehavior.mat','bin*')
+elseif strcmp(behav_select, 'None') %Requires xlwrite in /scripts/matlab/utilities/downloadedFunctions to work on Linux w/out Excel
+    [saveloc, savename] = fileparts(load_path);
+    colnames = {'Sound Frame', 'Puff Frame', 'Blink', 'Blink Score', 'Movement', 'Movement Strength Score', 'Movement Duration', 'Pupil Size', 'Notes'};
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), colnames, 'Sheet 1', 'A1');
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), indSounds, 'Sheet 1', 'A2');
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), indPuffs, 'Sheet 1', 'B2');
+end
+
+
+plot_names(end+1)=plot(binSounds,'-k'); line_names{end+1} = 'binSounds';
+plot_names(end+1)=plot(binPuffs,'-r'); line_names{end+1} = 'binPuffs';
+if exist('binTrials')
+    plot_names(end+1)=plot(binTrials,'-c'); line_names{end+1} = 'binTrials';
+end
+if exist('eye_trace')
+    plot_names(end+1)=plot(eye_trace / max(eye_trace),'-y'); line_names{end+1} = 'Eye_Trace';
+end
+title('Sanity Check for Line Ups')
+legend(plot_names, line_names, 'Location', 'eastoutside')
+
+%Sound Widths
+figure(); plot(movsum(binSounds, soundWindow))
+title('Width of Each Sound Pulse')
+ylabel('Width of Pulse')
+figure(); plot(movsum(binPuffs, puffWindow))
+title('Width of Each Puff Pulse')
+ylabel('Width of Pulse')
+if strcmp(behav_select, 'Excel') || strcmp(behav_select, 'BinaryVideo') %Trial Plots if There
+    figure(); plot(movsum(abs(binTrials), trialWindow))
+    title('Width of Each Trial Pulse')
+    ylabel('Width of Trial')
+end
+
+%% Saving the Output
+if strcmp(behav_select, 'BinaryVideo')
+    saveDir = behav_base_path;
+    cd(saveDir)
+    save('SyncedBehavior_BinaryVideo.mat','bin*', 'eye_trace', 'pupil_trace')
+elseif strcmp(behav_select, 'Excel')
+    saveDir = xlsx_path; %Assume xlsx is in a Behavior Output Folder
+    cd(saveDir)
+    % cd(xlsx_path)
+    save('SyncedBehavior.mat','bin*')
+elseif strcmp(behav_select, 'None') %Requires xlwrite in /scripts/matlab/utilities/downloadedFunctions to work on Linux w/out Excel
+    [saveloc, savename] = fileparts(load_path);
+    colnames = {'Sound Frame', 'Puff Frame', 'Blink', 'Blink Score', 'Movement', 'Movement Strength Score', 'Movement Duration', 'Pupil Size', 'Notes'};
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), colnames, 'Sheet 1', 'A1');
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), indSounds, 'Sheet 1', 'A2');
+    xlwrite(fullfile(saveloc,[savename,'_Behavior.xlsx']), indPuffs, 'Sheet 1', 'B2');
+end
+
